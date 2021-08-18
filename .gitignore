@@ -16,5 +16,5 @@ Cargo.lock
 # Downloaded Libraries
 tmp*
 
-# Idea
+# Idea directory
 .idea
