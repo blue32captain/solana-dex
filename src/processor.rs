@@ -280,6 +280,8 @@ impl Processor {
         let admin_destination_info = next_account_info(account_info_iter)?;
         let token_program_info = next_account_info(account_info_iter)?;
         let clock_sysvar_info = next_account_info(account_info_iter)?;
+        let pyth_product_info = next_account_info(account_info_iter)?;
+        let pyth_price_info = next_account_info(account_info_iter)?;
 
         let token_swap = SwapInfo::unpack(&swap_info.data.borrow())?;
         if token_swap.is_paused {
@@ -312,6 +314,35 @@ impl Processor {
         if *swap_source_info.key == *swap_destination_info.key {
             return Err(SwapError::InvalidInput.into());
         }
+
+        let pyth_product_data = &pyth_product_info.try_borrow_data()?;
+        let pyth_product = pyth_client::cast::<pyth_client::Product>(pyth_product_data);
+
+        if pyth_product.magic != pyth_client::MAGIC {
+            msg!("Pyth product account provided is not a valid Pyth account");
+            return Err(ProgramError::InvalidArgument.into());
+        }
+        if pyth_product.atype != pyth_client::AccountType::Product as u32 {
+            msg!("Pyth product account provided is not a valid Pyth product account");
+            return Err(ProgramError::InvalidArgument.into());
+        }
+        if pyth_product.ver != pyth_client::VERSION_2 {
+            msg!("Pyth product account provided has a different version than the Pyth client");
+            return Err(ProgramError::InvalidArgument.into());
+        }
+        if !pyth_product.px_acc.is_valid() {
+            msg!("Pyth product price account is invalid");
+            return Err(ProgramError::InvalidArgument.into());
+        }
+
+        let pyth_price_pubkey = Pubkey::new(&pyth_product.px_acc.val);
+        if &pyth_price_pubkey != pyth_price_info.key {
+            msg!("Pyth product price account does not match the Pyth price provided");
+            return Err(ProgramError::InvalidArgument.into());
+        }
+
+        let pyth_price_data = &pyth_price_info.try_borrow_data()?;
+        let pyth_price = pyth_client::cast::<pyth_client::Price>(pyth_price_data);
 
         let clock = Clock::from_account_info(clock_sysvar_info)?;
         let swap_source_account = utils::unpack_token_account(&swap_source_info.data.borrow())?;
