@@ -30,8 +30,128 @@ use solana_program::{
 };
 use spl_token::state::Mint;
 
+/// each account has its own type
+#[repr(C)]
+pub struct _Price {
+    /// pyth magic number
+    pub magic: u32,
+    /// program version
+    pub ver: u32,
+    /// account type
+    pub atype: u32,
+    /// price account size
+    pub size: u32,
+    /// price or calculation type
+    pub ptype: _PriceType,
+    /// price exponent
+    pub expo: i32,
+    /// number of component prices
+    pub num: u32,
+    /// number of quoters that make up aggregate
+    pub num_qt: u32,
+    /// slot of last valid (not unknown) aggregate price
+    pub last_slot: u64,
+    /// valid slot-time of agg. price
+    pub valid_slot: u64,
+    /// time-weighted average price
+    pub twap: _Ema,
+    /// time-weighted average confidence interval
+    pub twac: _Ema,
+    /// space for future derived values
+    pub drv1: i64,
+    /// space for future derived values
+    pub drv2: i64,
+    /// product account key
+    pub prod: _AccKey,
+    /// next Price account in linked list
+    pub next: _AccKey,
+    /// valid slot of previous update
+    pub prev_slot: u64,
+    /// aggregate price of previous update
+    pub prev_price: i64,
+    /// confidence interval of previous update
+    pub prev_conf: u64,
+    /// space for future derived values
+    pub drv3: i64,
+    /// aggregate price info
+    pub agg: _PriceInfo,
+    /// price components one per quoter
+    pub comp: [_PriceComp; 32],
+}
+
 /// Program state handler. (and general curve params)
 pub struct Processor {}
+
+/// different types of prices associated with a product
+#[repr(C)]
+pub enum _PriceType {
+    /// Unknown
+    Unknown,
+    /// Price
+    Price,
+}
+/// Ema
+#[repr(C)]
+pub struct _Ema {
+    /// current value of ema
+    pub val: i64,
+    //   numer          : i64,        // numerator state for next update
+    //   denom          : i64         // denominator state for next update
+}
+
+/// solana public key
+#[repr(C)]
+pub struct _AccKey {
+    /// val
+    pub val: [u8; 32],
+}
+
+/// contributing or aggregate price component
+#[repr(C)]
+pub struct _PriceInfo {
+    /// product price
+    pub price: i64,
+    /// confidence interval of product price
+    pub conf: u64,
+    /// status of price (Trading is valid)
+    pub status: _PriceStatus,
+    /// notification of any corporate action
+    pub corp_act: _CorpAction,
+    /// pub_slot
+    pub pub_slot: u64,
+}
+
+/// aggregate and contributing prices are associated with a status
+/// only Trading status is valid
+#[repr(C)]
+pub enum _PriceStatus {
+    /// Unknown
+    Unknown,
+    /// Trading
+    Trading,
+    /// Halted
+    Halted,
+    /// Auction
+    Auction,
+}
+
+/// ongoing coporate action event - still undergoing dev
+#[repr(C)]
+pub enum _CorpAction {
+    /// NoCorpAct
+    NoCorpAct,
+}
+
+/// latest component price and price used in aggregate snapshot
+#[repr(C)]
+pub struct _PriceComp {
+    /// key of contributing quoter
+    pub publisher: _AccKey,
+    /// contributing price to last aggregate
+    pub agg: _PriceInfo,
+    /// latest contributing price (not in agg.)
+    pub latest: _PriceInfo,
+}
 
 impl Processor {
     /// Unpacks a spl_token `Mint`.
@@ -262,11 +382,11 @@ impl Processor {
         SwapInfo::pack(obj, &mut swap_info.data.borrow_mut())?;
         Ok(())
     }
-
+/// get pyth price
     pub fn get_pyth_price(
         pyth_product_info: &AccountInfo,
         pyth_price_info: &AccountInfo,
-    ) -> Result<pyth_client::Price, ProgramError> {
+    ) -> Result<_Price, ProgramError> {
         let pyth_product_data = &pyth_product_info.try_borrow_data()?;
         let pyth_product = pyth_client::cast::<pyth_client::Product>(pyth_product_data);
 
@@ -296,7 +416,118 @@ impl Processor {
         let pyth_price_data = &pyth_price_info.try_borrow_data()?;
         let pyth_price = pyth_client::cast::<pyth_client::Price>(pyth_price_data);
 
-        let ret: pyth_client::Price = *pyth_price;
+        let ptype: _PriceType = match pyth_price.ptype {
+            pyth_client::PriceType::Unknown => _PriceType::Unknown,
+            pyth_client::PriceType::Price => _PriceType::Price,
+        };
+
+        let twap: _Ema = _Ema {
+            val: pyth_price.twap.val,
+        };
+
+        let twac: _Ema = _Ema {
+            val: pyth_price.twap.val,
+        };
+
+        let prod: _AccKey = _AccKey {
+            val: pyth_price.prod.val,
+        };
+
+        let next: _AccKey = _AccKey {
+            val: pyth_price.next.val,
+        };
+
+        let status: _PriceStatus = match pyth_price.agg.status {
+            pyth_client::PriceStatus::Unknown => _PriceStatus::Unknown,
+            pyth_client::PriceStatus::Trading => _PriceStatus::Trading,
+            pyth_client::PriceStatus::Halted => _PriceStatus::Halted,
+            pyth_client::PriceStatus::Auction => _PriceStatus::Auction,
+        };
+
+        let corp_act: _CorpAction = match pyth_price.agg.corp_act {
+            pyth_client::CorpAction::NoCorpAct => _CorpAction::NoCorpAct,
+        };
+
+        let agg: _PriceInfo = _PriceInfo {
+            price: pyth_price.agg.price,
+            conf: pyth_price.agg.conf,
+            status: status,
+            corp_act: corp_act,
+            pub_slot: pyth_price.agg.pub_slot,
+        };
+
+        let mut comp: [_PriceComp; 32] = unsafe { ::std::mem::uninitialized() };
+
+        for (i, elem) in pyth_price.comp.iter().enumerate() {
+            let publisher: _AccKey = _AccKey {
+                val: elem.publisher.val,
+            };
+            let status_agg: _PriceStatus = match elem.agg.status {
+                pyth_client::PriceStatus::Unknown => _PriceStatus::Unknown,
+                pyth_client::PriceStatus::Trading => _PriceStatus::Trading,
+                pyth_client::PriceStatus::Halted => _PriceStatus::Halted,
+                pyth_client::PriceStatus::Auction => _PriceStatus::Auction,
+            };
+            let corp_act_agg: _CorpAction = match elem.agg.corp_act {
+                pyth_client::CorpAction::NoCorpAct => _CorpAction::NoCorpAct,
+            };
+            let agg: _PriceInfo = _PriceInfo {
+                price: elem.agg.price,
+                conf: elem.agg.conf,
+                status: status_agg,
+                corp_act: corp_act_agg,
+                pub_slot: elem.agg.pub_slot,
+            };
+            let status_latest: _PriceStatus = match elem.latest.status {
+                pyth_client::PriceStatus::Unknown => _PriceStatus::Unknown,
+                pyth_client::PriceStatus::Trading => _PriceStatus::Trading,
+                pyth_client::PriceStatus::Halted => _PriceStatus::Halted,
+                pyth_client::PriceStatus::Auction => _PriceStatus::Auction,
+            };
+
+            let corp_act_latest: _CorpAction = match elem.latest.corp_act {
+                pyth_client::CorpAction::NoCorpAct => _CorpAction::NoCorpAct,
+            };
+            let latest: _PriceInfo = _PriceInfo {
+                price: elem.latest.price,
+                conf: elem.latest.conf,
+                status: status_latest,
+                corp_act: corp_act_latest,
+                pub_slot: elem.latest.pub_slot,
+            };
+
+            comp[i] = _PriceComp {
+                publisher: publisher,
+                agg: agg,
+                latest: latest,
+            };
+        }
+
+        // let ret: pyth_client::Price = *pyth_price;
+        let ret: _Price = _Price {
+            magic: pyth_price.magic,
+            ver: pyth_price.ver,
+            atype: pyth_price.atype,
+            size: pyth_price.size,
+            ptype: ptype,
+            expo: pyth_price.expo,
+            num: pyth_price.num,
+            num_qt: pyth_price.num_qt,
+            last_slot: pyth_price.last_slot,
+            valid_slot: pyth_price.valid_slot,
+            twap: twap,
+            twac: twac,
+            drv1: pyth_price.drv1,
+            drv2: pyth_price.drv2,
+            prod: prod,
+            next: next,
+            prev_slot: pyth_price.prev_slot,
+            prev_price: pyth_price.prev_price,
+            prev_conf: pyth_price.prev_conf,
+            drv3: pyth_price.drv3,
+            agg: agg,
+            comp: comp,
+        };
 
         Ok(ret)
     }
@@ -353,7 +584,7 @@ impl Processor {
             return Err(SwapError::InvalidInput.into());
         }
 
-        Self::get_pyth_price(pyth_product_info, pyth_price_info);
+        let price = Self::get_pyth_price(pyth_product_info, pyth_price_info)?;
 
         let clock = Clock::from_account_info(clock_sysvar_info)?;
         let swap_source_account = utils::unpack_token_account(&swap_source_info.data.borrow())?;
@@ -409,11 +640,8 @@ impl Processor {
         )?;
         Ok(())
     }
-
-    pub fn convert_token_price(
-        token_a_price: f64,
-        token_b_price: f64,
-    ) -> Option<f64> {
+/// convert token price
+    pub fn convert_token_price(token_a_price: f64, token_b_price: f64) -> Option<f64> {
         let ret: f64 = token_a_price / token_b_price;
 
         return Some(ret);
