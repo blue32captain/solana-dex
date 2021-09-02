@@ -29,6 +29,7 @@ use solana_program::{
     sysvar::{clock::Clock, Sysvar},
 };
 use spl_token::state::Mint;
+use std::mem::{MaybeUninit};
 
 /// each account has its own type
 #[repr(C)]
@@ -456,7 +457,7 @@ impl Processor {
             pub_slot: pyth_price.agg.pub_slot,
         };
 
-        let mut comp: [_PriceComp; 32] = unsafe { ::std::mem::uninitialized() };
+        let mut comp: [_PriceComp; 32] = unsafe { MaybeUninit::uninit().assume_init() };
 
         for (i, elem) in pyth_price.comp.iter().enumerate() {
             let publisher: _AccKey = _AccKey {
@@ -584,7 +585,7 @@ impl Processor {
             return Err(SwapError::InvalidInput.into());
         }
 
-        let price = Self::get_pyth_price(pyth_product_info, pyth_price_info)?;
+        let _price = Self::get_pyth_price(pyth_product_info, pyth_price_info)?;
 
         let clock = Clock::from_account_info(clock_sysvar_info)?;
         let swap_source_account = utils::unpack_token_account(&swap_source_info.data.borrow())?;
